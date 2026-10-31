@@ -36,8 +36,9 @@ This application solves this operational vulnerability by:
 
 ### 1. Clone & Install Dependencies
 ```bash
-# Clone the repository or navigate to workspace
-cd Smart-Roster-Management
+# Clone the repository
+git clone https://github.com/RuchilParkar/Smart-Roster-Management-System.git
+cd Smart-Roster-Management-System
 
 # Install dependencies
 npm install
@@ -55,7 +56,7 @@ The application works **100% out of the box** in offline/local mock mode with pr
    VITE_SUPABASE_URL=https://your-project.supabase.co
    VITE_SUPABASE_ANON_KEY=your-anon-key-here
    ```
-3. Open your Supabase project's **SQL Editor** and run the contents of [`supabase_schema.sql`](file:///c:/Smart-Roster-Management/supabase_schema.sql) to initialize the database tables, relations, and RLS policies.
+3. Open your Supabase project's **SQL Editor** and run the contents of `supabase_schema.sql` to initialize the database tables, relations, and RLS policies.
 4. Alternatively, click the **"Supabase Active / Local Mock"** widget in the sidebar within the app UI to configure credentials at runtime or trigger 1-click database synchronization!
 
 ### 3. Start the Development Server
@@ -151,95 +152,140 @@ Identifies and categorizes:
 
 ---
 
-## 📚 Comprehensive Answers to Assessment Questions
+## 📚 Answers to Assessment Questions
 
-### Question 1: Data Model & Schema Design
-> *How are employees, pods, brands, processes, and operational calendars modeled? How do brand operating calendars stay decoupled from employee weekly offs?*
+### 1. How did you model employees, brands, processes, pods, and their relationships?
 
-**Answer:**
-We designed a normalized relational schema where business requirements and workforce resources exist as independent entities:
-1. `BrandProcessRule` stores client contractual commitments: `brandId`, `processId`, `operatingRule` (`365_DAYS` | `ALL_EXCEPT_HOLIDAYS` | `ALL_EXCEPT_SUNDAYS_AND_HOLIDAYS`), and `minStaffRequired`.
-2. `Employee` stores individual HR preferences: `podId`, `weeklyOffDays: number[]`, `leaveBalance`, and `compOffBalance`.
-3. **Decoupling Logic:** The scheduling engine never conflates employee rest days with client operating days. On any date $D$, the engine first checks whether the brand's rule requires operations. It then queries the availability of assigned employees. If an employee is on weekly off or leave, the brand calendar remains active, and the engine detects a deficit if no backup is assigned.
+I designed the system using a relational data model to maintain flexibility and avoid unnecessary duplication:
+- **Employees**: Each employee has a unique ID, name, email, assigned role, pod, weekly off day, leave balances, and assigned brand/process responsibilities.
+- **Pods**: Employees are grouped into operational pods, each managed by a designated Pod Lead.
+- **Brands**: Each brand represents a client account and contains its operating calendar rules and staffing requirements.
+- **Processes**: The system supports four core processes: Customer Support (CS), Abandoned Cart Conversions (ACC), Non-Delivery Report (NDR), and Retention.
+- **Assignments**: Employee-to-brand and employee-to-process relationships are maintained through assignment mappings, supporting multiple assignments without duplicating employee records.
 
----
-
-### Question 2: Multi-Brand & Multi-Process Assignment Architecture
-> *How does the system handle employees working across multiple brands and overlapping processes without double-booking?*
-
-**Answer:**
-1. Employees maintain array relations (`assignedBrandIds: string[]`, `assignedProcessIds: string[]`). For example, Kabir Patel (EMP-006) supports both Lumina Skin and Bolt Electric.
-2. The conflict detection engine scans each employee's schedule. If an employee is scheduled to work while having an approved leave, a `LEAVE_CLASH` warning is generated.
-3. For overlapping processes within a brand (e.g. CS + ACC), the engine verifies that total daily assigned workload does not exceed standard shift hours, and floaters from Pod Delta are flagged when multi-process volume exceeds single-agent capacity.
+This structure allows an employee to work across multiple brands and processes while maintaining centralized employee information.
 
 ---
 
-### Question 3: Scheduling Logic & Priority Rules
-> *How does the roster generation algorithm balance mandatory client coverage rules against employee weekly offs, public holidays, leaves, and comp-offs?*
+### 2. How does your system generate a roster and determine whether it satisfies the required constraints?
 
-**Answer:**
-The system strictly enforces the hierarchy: **Mandatory Client Coverage > Planned Leaves > Employee Preferences**:
-1. If a brand operates under `365_DAYS`, assigned agents are scheduled to work on public holidays (earning compensatory off credits), ensuring continuous SLA compliance.
-2. If an employee requests leave, the leave status is recorded, but the engine immediately assesses whether remaining active headcount satisfies `minStaffRequired`.
-3. If headcount drops below required thresholds, the roster is **never silently generated as valid**; the gap is prominently surfaced in the Conflict Center.
+The system uses a synchronous constraint-based scheduling engine implemented in `src/utils/rosterEngine.ts`.
 
----
+For every employee and calendar day, the engine evaluates:
+- Employee availability and weekly off days.
+- Approved annual, casual, and sick leaves.
+- Compensatory off credits.
+- Brand and process operating calendars.
+- Required staffing levels.
+- Employee-to-brand and employee-to-process assignments.
 
-### Question 4: Strategy for Fragile ~80% Single-Resource Brands
-> *What is the operational strategy for maintaining SLA coverage when approximately 80% of brands are staffed by a single resource?*
+Based on these conditions, the engine generates daily roster statuses such as Working (`W`), Off (`OFF`), Leave (`L`), Comp-Off (`CO`), and Public Holiday (`PH`).
 
-**Answer:**
-Single-resource accounts represent a critical single point of failure (SPOF). We mitigate this through three architectural pillars:
-1. **Pod Delta Rapid-Response Floater Pool:** Pod Delta is staffed by universal floaters cross-trained across Shopify, CRM, and all 4 process SOPs. They carry flexible shift allocations and can be deployed on 2 hours' notice.
-2. **Staggered Rotational Offs:** Rather than clustering all agent off days on Sundays, single-resource agents have staggered offs (Sunday, Monday, Tuesday), enabling cross-pod buddy coverage.
-3. **Visual Vulnerability Badging:** Single-resource accounts are tagged with `⚠️ Single Resource (1 Agent)` in the Brand Coverage matrix, prioritizing their alerts in daily manager standups.
+After generating the roster, it validates coverage requirements and identifies conflicts such as insufficient staffing, coverage gaps, sole-resource leave, and scheduling clashes.
+
+The engine recalculates synchronously whenever a schedule is modified, ensuring that updated coverage and conflict information is immediately reflected in the interface.
 
 ---
 
-### Question 5: Change Handling Scenario Breakdown
-> *How does the system detect, explain, and mitigate when an employee who is the only resource assigned to a brand requests leave on a required working day?*
+### 3. How did you handle the difference between single-resource brands and brands with multiple employees?
 
-**Answer:**
-1. **Detection:** When Vikram Rao requests leave on Nov 12 for Apex Gear (a 365-day account), the solver checks active staff on duty: $Available = 0 < Required = 1$.
-2. **Explanation:** System generates a `SOLE_RESOURCE_LEAVE` conflict detailing:
-   - Client contract: 365-Day Operations, 09:00 - 21:00 IST.
-   - Root cause: Sole specialist absent with 0 active backups.
-   - Financial & SLA risk: Direct breach of MSA turnaround time (TAT).
-3. **Mitigation:** Manager clicks "Resolve / Assign Floater" &rarr; selects Devansh Pandey from Pod Delta &rarr; creates an audit-logged `RosterCellOverride` &rarr; live re-validation restores SLA coverage to 100%.
+I handled these two categories differently based on their operational risk:
 
----
+**Single-resource brands:**
+- A dedicated employee is assigned to the brand.
+- The system identifies the employee as a sole resource.
+- Any approved or proposed absence that creates a coverage gap triggers a critical conflict (`SOLE_RESOURCE_LEAVE`).
+- Cross-trained employees from other pods (like Pod Delta) can be assigned as temporary backups.
 
-### Question 6: Conflict Detection & Resolution Strategy
-> *What constitutes a hard conflict vs. a soft conflict, and how does the system prevent silently generating an invalid roster?*
+**Multi-resource brands:**
+- Multiple employees can be assigned to the same brand and process.
+- Staffing requirements are evaluated against the number of available employees.
+- The system can maintain coverage even when one employee is unavailable, provided sufficient resources remain.
 
-**Answer:**
-- **Hard Conflicts (Critical):**
-  - Zero-Coverage Gaps: 0 agents scheduled during client operating hours.
-  - Sole-Resource Absence: 100% service stoppage for single-agent accounts.
-- **Soft Conflicts (Warnings):**
-  - Insufficient Staffing: Staff count &gt; 0 but below optimal target.
-  - Leave Override Clash: Agent marked working despite pre-existing leave.
-- **Fail-Safe Visibility:** Coverage percentage drops on the header, the conflict counter pulses in red, and unmitigated gaps remain highlighted in the roster grid until explicitly resolved.
+This approach protects fragile single-resource accounts while allowing flexible resource allocation for larger accounts.
 
 ---
 
-### Question 7: Manual Override & Re-Validation Workflow
-> *How do managers modify shift assignments, swap offs, or reallocate backup resources, and how does real-time re-validation work?*
+### 4. What happens when an employee manages all processes for a brand but is unavailable on a required working day?
 
-**Answer:**
-1. Clicking any schedule cell opens the `ShiftEditModal`.
-2. Managers can switch status (`WORKING`, `WEEKLY_OFF`, `LEAVE`, `COMP_OFF`), assign temporary brand/process backup, and record an audit log reason.
-3. The mutation updates the reactive application state, triggering `generateMonthlyRoster(...)` synchronously in memory. The entire roster matrix, brand coverage tables, and conflict list update in less than 8ms.
+The system first checks whether the employee is the only assigned resource for the affected brand and processes.
+
+If the employee is unavailable due to leave, weekly off, or another scheduling constraint:
+1. The scheduling engine identifies the affected processes.
+2. It checks the brand's operating calendar to determine whether coverage is mandatory.
+3. It generates a critical coverage conflict if no replacement is available.
+4. It identifies eligible cross-trained employees who can act as backups.
+5. A Pod Lead or authorized administrator can assign a temporary replacement.
+6. The engine revalidates the roster and updates coverage status.
+
+For example, in the Apex Gear scenario, Vikram Rao (`EMP-004`) is the only Customer Support specialist. When he requests leave on November 12, 2026, the system detects a 0/1 staffing gap and allows Devansh Pandey (`EMP-031`) from Pod Delta to be assigned as temporary backup.
 
 ---
 
-### Question 8: Scalability, Edge Cases & Operational Trade-offs
-> *How would this architecture scale to 500+ employees, 100+ brands, 24/7 rotating shifts, and what edge cases or trade-offs emerge?*
+### 5. How does your system handle conflicting requirements or insufficient staffing?
 
-**Answer:**
-1. **Computational Scalability:** The current $O(E \cdot D + B \cdot P \cdot D)$ client-side evaluation executes in &lt; 8ms for 32 employees. For 500+ employees and 100+ brands across 365 days, evaluations move to server-side PostgreSQL queries backed by BitSet masks and Redis caching.
-2. **24/7 Rotating Shift Windows:** The data model extends from daily slots to 8-hour shift windows (Morning, Evening, Night) with automated enforcement of mandatory 12-hour rest intervals between shifts.
-3. **Automated Constraint Solvers:** Integration with integer linear programming (ILP) engines (such as Google OR-Tools) to automatically solve multi-brand backup allocations while minimizing overtime costs and optimizing pod familiarity.
+The system uses a conflict detection and prioritization mechanism.
+
+Conflicts are categorized into:
+- `COVERAGE_GAP`: No employee is scheduled during mandatory operating hours.
+- `SOLE_RESOURCE_LEAVE`: The only specialist assigned to a brand is unavailable.
+- `INSUFFICIENT_STAFFING`: Available employees are fewer than the required minimum.
+- `DOUBLE_BOOKING` / `LEAVE_CLASH`: An employee has conflicting assignments or a working override during approved leave.
+
+The system distinguishes between hard constraints and soft preferences:
+- **Hard constraints** include approved leave, employee availability, scheduling conflicts, and mandatory staffing requirements.
+- **Soft preferences** include preferred weekly offs and resource allocation convenience.
+
+When requirements cannot all be satisfied, the system prioritizes operational coverage while respecting employee availability and approved leave. It highlights unresolved conflicts instead of silently generating an invalid roster. Human intervention is required when no valid staffing solution exists.
+
+---
+
+### 6. Which parts of the process did you automate, and which did you leave under human control? Why?
+
+**Automated processes:**
+- Monthly roster generation.
+- Employee availability validation.
+- Weekly off and leave handling.
+- Brand and process coverage calculations.
+- Conflict detection and categorization.
+- Immediate roster revalidation.
+- Coverage status and staffing gap updates.
+
+**Human-controlled processes:**
+- Employee leave approval.
+- Manual shift overrides.
+- Temporary backup assignments.
+- Resolution of critical staffing conflicts.
+- Final operational approval of the roster.
+
+I automated repetitive and rule-based decisions to reduce manual effort and scheduling errors. However, I retained human control over decisions that require operational judgment, accountability, and coordination between Pod Leads and management.
+
+---
+
+### 7. If the company doubled its team and brand count, what would you change about your solution?
+
+The current implementation is designed to demonstrate the scheduling workflow with 32 employees and 12 brands. If the organization expanded to 500+ employees and 100+ brands, I would make the following improvements:
+- **Database optimization**: Use properly indexed PostgreSQL tables, optimized queries, and database-level constraints.
+- **Scheduling architecture**: Move from synchronous client-side scheduling to a dedicated backend scheduling service for larger workloads.
+- **Advanced optimization**: Introduce constraint-solving algorithms or optimization libraries (like Google OR-Tools) to minimize staffing gaps and balance workloads.
+- **Caching**: Use Redis for frequently accessed roster and staffing information.
+- **Background processing**: Generate large monthly rosters through asynchronous jobs.
+- **Role-based access control**: Introduce more granular permissions for administrators, Pod Leads, and employees.
+- **Monitoring**: Add structured logging, performance monitoring, and audit trails for roster changes.
+
+These improvements would make the application more scalable, maintainable, and suitable for enterprise operations.
+
+---
+
+### 8. If you had one additional week to work on this, what would you improve first?
+
+I would prioritize improving the scheduling engine and its conflict-resolution capabilities:
+- **Advanced backup recommendations**: Automatically rank eligible backup employees based on process skills, availability, pod capacity, and existing assignments.
+- **Fair workload distribution**: Ensure that working days, weekly offs, and assignments are distributed fairly across employees.
+- **Automated testing**: Add comprehensive unit and integration tests for roster generation, leave scenarios, and scheduling conflicts.
+- **Audit history**: Maintain a record of who modified a roster, what changed, and when it happened.
+- **Performance optimization**: Benchmark scheduling performance with larger datasets.
+- **Improved reporting**: Add downloadable monthly rosters and coverage reports (CSV / PDF exports).
 
 ---
 
